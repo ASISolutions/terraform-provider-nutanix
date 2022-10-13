@@ -21,7 +21,7 @@ terraform {
   required_providers{
       nutanix = {
           source = "nutanix/nutanix"
-          version = "1.5.0-beta"
+          version = "1.7.1"
       }
   }
 }
@@ -31,6 +31,42 @@ provider "nutanix" {
     foundation_endpoint = "10.xx.xx.xx"
 }
 
+/*
+Description:
+- Here we will discover nodes within ipv6 network of foundation vm & retrieve
+  node network details all nodes which are not part of cluster.
+- Nodes discovered having configured parameter false are not part of any cluster
+*/
+
+//discovery of nodes
+data "nutanix_foundation_discover_nodes" "nodes"{}
+
+//Get all unconfigured node's ipv6 addresses
+locals {
+  ipv6_addresses = flatten([
+      for block in data.nutanix_foundation_discover_nodes.nodes.entities:
+        [
+          for node in block.nodes: 
+            node.ipv6_address if node.configured==false
+        ]
+  ])
+}
+
+//Get node network details as per the ipv6 addresses collected
+data "nutanix_foundation_node_network_details" "ntw_details" {
+  ipv6_addresses = local.ipv6_addresses
+}
+
+//create map of node_serial => node_networ_details of each node
+locals {
+    ipv6_node_network_details_map = tomap({
+        for node in data.nutanix_foundation_node_network_details.ntw_details.nodes:
+        "${node.node_serial}" => node
+        if node.node_serial != ""
+    })
+}
+
+    
 // import config.json . Replace the file location if required.
 locals{
     config = (jsondecode(file("config.json"))).config
@@ -40,6 +76,11 @@ locals{
 data "nutanix_foundation_nos_packages" "nos"{}
 
 resource "nutanix_foundation_image_nodes" "batch1" {
+    
+  // custom timeout, default is 60 minutes
+    timeouts {
+        create = "65m"
+    }
 
   // give required info
   ipmi_netmask = local.config.ipmi_netmask
@@ -69,6 +110,8 @@ resource "nutanix_foundation_image_nodes" "batch1" {
                 hypervisor = "kvm"
                 hypervisor_hostname = nodes.value.hypervisor_hostname
                 node_position = nodes.value.node_position
+                ipv6_address = data.nutanix_foundation_discover_nodes.nodes.entities.block.nodes.node.ipv6
+                device_hint = "vm_installer"
             }
         }
       }
